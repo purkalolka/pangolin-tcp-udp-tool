@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -457,6 +457,43 @@ def _subtract_range(ranges, start, end):
         if b > end:
             out.append((end + 1, b))
     return sorted(out)
+
+
+def do_range_clear(cfg):
+    """Вернуть исходный вариант: убрать все диапазоны. Порты, на которых
+    ещё висят правила, не трогаем — они остаются как обычные порты правил.
+    Один рестарт, если хоть что-то убиралось."""
+    path = cfg.get("config_path", DEFAULT_CONFIG)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    ranges = [tuple(r) for r in data.get("port_ranges", [])]
+    if not ranges:
+        return {"cleared_ranges": [], "kept_ports": [],
+                "restarted": False,
+                "note": "диапазонов нет, убирать нечего"}
+    state = load_state(cfg["state_file"])
+    used = {(r["public_port"], r["protocol"]) for r in state}
+    kept = sorted(used)
+    removed_any = False
+    for a, b in ranges:
+        for port in range(a, b + 1):
+            for proto in ("tcp", "udp"):
+                if (port, proto) in used:
+                    continue
+                if remove_gerbil_port(cfg["pangolin_dir"], port, proto):
+                    removed_any = True
+                if remove_traefik_entrypoint(cfg["pangolin_dir"], port, proto):
+                    removed_any = True
+    if removed_any:
+        restart_stack(cfg["pangolin_dir"])
+    data["port_ranges"] = []
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.chmod(path, 0o600)
+    return {"cleared_ranges": [list(r) for r in ranges],
+            "kept_ports": [list(p) for p in kept],
+            "restarted": removed_any,
+            "note": "диапазонов больше нет, add/delete снова с рестартом"}
 
 
 def do_range_remove(cfg, start, end):
@@ -929,6 +966,7 @@ def main(argv=None):
     rr = sub.add_parser("range-remove", help="убрать порты из диапазона (сначала удали правила на них)")
     rr.add_argument("--start", type=int, required=True)
     rr.add_argument("--end", type=int, required=True)
+    sub.add_parser("range-clear", help="убрать все диапазоны, вернуть исходный вариант")
     c = sub.add_parser("check", help="проверить слои правила")
     c.add_argument("--name")
     sub.add_parser("sync", help="забрать уже созданные руками ресурсы")
@@ -979,6 +1017,8 @@ def main(argv=None):
         elif args.cmd == "range-remove":
             print(json.dumps(do_range_remove(cfg, args.start, args.end),
                              indent=2, ensure_ascii=False))
+        elif args.cmd == "range-clear":
+            print(json.dumps(do_range_clear(cfg), indent=2, ensure_ascii=False))
         elif args.cmd == "check":
             for r in do_check(cfg, args.name):
                 mark = "OK" if r["ok"] else "FAIL"

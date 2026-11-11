@@ -153,6 +153,53 @@ class BatchTests(unittest.TestCase):
         vl.assert_called_once_with(29378, "tcp")
         self.assertTrue(res["all_ok"])
 
+    def test_range_clear_removes_all_and_keeps_rule_ports(self):
+        cfg_path = os.path.join(self.d, "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"org_id": "emae", "api_key": "k",
+                       "port_ranges": [[29500, 29501]]}, f)
+        cfg = {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
+               "org_id": "emae", "state_file": os.path.join(self.d, "r.json"),
+               "pangolin_dir": self.pang, "ui_token": "t",
+               "config_path": cfg_path}
+        rule = {"name": "rdp-pc1", "protocol": "tcp", "public_port": 29500,
+                "site_id": 1, "site_name": "wsl", "target_ip": "127.0.0.1",
+                "target_port": 3389, "resource_id": 3}
+        with open(cfg["state_file"], "w") as f:
+            json.dump([rule], f)
+        for port in (29500, 29501):
+            for proto in ("tcp", "udp"):
+                pt.add_gerbil_port(self.pang, port, proto)
+                pt.add_traefik_entrypoint(self.pang, port, proto)
+        with mock.patch.object(pt, "restart_stack") as rs:
+            res = pt.do_range_clear(cfg)
+        rs.assert_called_once()
+        self.assertEqual(res["cleared_ranges"], [[29500, 29501]])
+        self.assertEqual(res["kept_ports"], [[29500, "tcp"]])
+        self.assertTrue(res["restarted"])
+        # порт правила остался, свободный порт диапазона убран
+        self.assertTrue(pt.port_provisioned(self.pang, 29500, "tcp"))
+        self.assertFalse(pt.port_provisioned(self.pang, 29501, "tcp"))
+        self.assertFalse(pt.port_provisioned(self.pang, 29500, "udp"))
+        with open(cfg_path) as f:
+            self.assertEqual(json.load(f)["port_ranges"], [])
+
+    def test_range_clear_nothing_to_do(self):
+        cfg_path = os.path.join(self.d, "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"org_id": "emae", "api_key": "k"}, f)
+        cfg = {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
+               "org_id": "emae", "state_file": os.path.join(self.d, "r.json"),
+               "pangolin_dir": self.pang, "ui_token": "t",
+               "config_path": cfg_path}
+        with open(cfg["state_file"], "w") as f:
+            json.dump([], f)
+        with mock.patch.object(pt, "restart_stack") as rs:
+            res = pt.do_range_clear(cfg)
+        rs.assert_not_called()
+        self.assertFalse(res["restarted"])
+        self.assertEqual(res["cleared_ranges"], [])
+
     def test_subtract_range(self):
         self.assertEqual(pt._subtract_range([(29400, 29409)], 29405, 29409),
                          [(29400, 29404)])
