@@ -47,7 +47,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -589,6 +589,7 @@ def do_site_create(cfg, name):
         f.write(f"NEWT_SECRET={d['newtSecret']}\n")
     os.chmod(env_path, 0o600)
     cmd = ("docker run -d --name newt --network host --cap-add NET_ADMIN "
+           "--restart unless-stopped "
            f"-e PANGOLIN_ENDPOINT=https://{d.get('endpoint')} "
            f"-e NEWT_ID={d['newtId']} -e NEWT_SECRET={d['newtSecret']} "
            "fosrl/newt:latest")

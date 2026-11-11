@@ -155,6 +155,7 @@ class ApiPayloadTests(unittest.TestCase):
             res = pt.do_site_create(cfg, "node-1")
         cmd = res["connect_command"]
         self.assertIn("docker run -d --name newt --network host", cmd)
+        self.assertIn("--restart unless-stopped", cmd)
         self.assertIn("-e PANGOLIN_ENDPOINT=https://tun.emae.su", cmd)
         self.assertIn("-e NEWT_ID=abc", cmd)
         self.assertIn("-e NEWT_SECRET=s3cr3t", cmd)
