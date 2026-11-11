@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -619,9 +619,13 @@ def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
         api.delete_resource(resource_id)
         raise
     changed_flag = ensure_raw_flag(pangolin_dir)
+    # ВАЖНО: provisioned считаем ДО записи порта в файлы. Если проверить
+    # после add_gerbil_port/add_traefik_entrypoint, порт уже будет в обоих
+    # файлах и проверка всегда вернёт True — рестарт пропустится даже для
+    # порта вне диапазона (баг v1.4.0–v1.4.4, найден 2026-11-12 на 29378).
+    provisioned = port_provisioned(pangolin_dir, public_port, protocol)
     add_gerbil_port(pangolin_dir, public_port, protocol)
     add_traefik_entrypoint(pangolin_dir, public_port, protocol)
-    provisioned = port_provisioned(pangolin_dir, public_port, protocol)
     if no_restart and not provisioned:
         # Порт в файлах есть, но Gerbil/Traefik его ещё не подхватили.
         # Работать начнёт только после `apply` — один рестарт на все правки.

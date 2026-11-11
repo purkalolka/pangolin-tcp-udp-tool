@@ -309,6 +309,24 @@ class BatchTests(unittest.TestCase):
         with open(cfg_path) as f:
             self.assertEqual(json.load(f)["port_ranges"], [[29500, 29501]])
 
+    def test_add_outside_range_restarts(self):
+        # регрессия v1.4.0–v1.4.4: provisioned проверялся ПОСЛЕ записи порта
+        # в файлы и всегда был True — рестарт пропускался даже вне диапазона
+        cfg = self._cfg_with_rule()
+        cfg["state_file"] = os.path.join(self.d, "empty.json")
+        api = mock.Mock()
+        api.list_sites.return_value = [{"siteId": 1, "name": "wsl"}]
+        api.create_resource.return_value = {"resourceId": 9}
+        api.create_target.return_value = {}
+        with mock.patch.object(pt, "PangolinApi", return_value=api), \
+             mock.patch.object(pt, "restart_stack") as rs, \
+             mock.patch.object(pt, "verify_listener") as vl:
+            res = pt.do_add(cfg, "rdp-out", "tcp", 29600, "wsl",
+                            "127.0.0.1", 3389)
+        rs.assert_called_once()
+        vl.assert_called_once_with(29600, "tcp")
+        self.assertFalse(res["pending_restart"])
+
     def test_add_in_range_skips_restart(self):
         cfg = self._cfg_with_rule()
         cfg["state_file"] = os.path.join(self.d, "empty.json")
