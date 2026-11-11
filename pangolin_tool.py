@@ -47,7 +47,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -412,6 +412,52 @@ def firewall_hint(port, protocol):
             f"{port}/{protocol}, как открыты 80/443/51820/21820.")
 
 # ---------------------------------------------------------------- операции
+def port_provisioned(pangolin_dir, port, protocol):
+    """Порт заранее заведён: entrypoint есть в Traefik И порт опубликован
+    у Gerbil. Тогда Pangolin подхватывает ресурс динамически, без рестарта
+    стека — проверено живьём 2026-11-11 на порту 29400."""
+    compose = _read(os.path.join(pangolin_dir, "docker-compose.yml"))
+    traefik = _read(os.path.join(pangolin_dir, "config", "traefik",
+                                "traefik_config.yml"))
+    if protocol == "tcp":
+        in_compose = re.search(rf"-\s+{port}:{port}(?!/udp)\b",
+                                compose) is not None
+    else:
+        in_compose = re.search(rf"-\s+{port}:{port}/udp\b", compose) is not None
+    in_traefik = f"{entrypoint_name(port, protocol)}:" in traefik
+    return in_compose and in_traefik
+
+
+def do_range(cfg, start, end):
+    """Заранее завести диапазон портов (один рестарт на весь диапазон),
+    после чего add/delete внутри него идут без рестарта вообще."""
+    if not (1 <= start <= 65535 and 1 <= end <= 65535 and start <= end):
+        raise ToolError("range: нужны --start и --end, 1..65535, start <= end")
+    if end - start + 1 > 100:
+        raise ToolError("range: максимум 100 портов за раз — каждый "
+                        "опубликованный порт это отдельный docker-proxy. "
+                        "Разбей на несколько вызовов.")
+    for port in range(start, end + 1):
+        for proto in ("tcp", "udp"):
+            add_gerbil_port(cfg["pangolin_dir"], port, proto)
+            add_traefik_entrypoint(cfg["pangolin_dir"], port, proto)
+    restart_stack(cfg["pangolin_dir"])
+    verify_listener(start, "tcp")
+    verify_listener(end, "tcp")
+    path = cfg.get("config_path", DEFAULT_CONFIG)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    ranges = [tuple(r) for r in data.get("port_ranges", [])]
+    ranges.append((start, end))
+    data["port_ranges"] = [list(r) for r in sorted(set(ranges))]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.chmod(path, 0o600)
+    return {"range": [start, end],
+            "ports": end - start + 1,
+            "note": "теперь add/delete внутри диапазона идут без рестарта"}
+
+
 def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
            dry_run=False, no_restart=False):
     validate_rule(name, protocol, public_port, target_ip, target_port)
@@ -424,8 +470,10 @@ def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
     pangolin_dir = cfg["pangolin_dir"]
     api = PangolinApi(cfg["api_base"], cfg["api_key"], cfg["org_id"])
     site = resolve_site(api, site_ref)
-    # 0. Порт уже занят в ОС кем-то другим?
-    if (public_port, protocol) in os_ports(pangolin_dir):
+    # 0. Порт уже занят в ОС кем-то другим? Заранее заведённый диапазон
+    # (range) — не занятость, а готовность: тогда рестарт не нужен.
+    if (public_port, protocol) in os_ports(pangolin_dir) \
+            and not port_provisioned(pangolin_dir, public_port, protocol):
         raise ToolError(
             f"порт {public_port}/{protocol} уже прописан в Gerbil/Traefik. "
             "Сделай sync, чтобы забрать его в состояние, или выбери другой порт."
@@ -454,12 +502,15 @@ def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
     changed_flag = ensure_raw_flag(pangolin_dir)
     add_gerbil_port(pangolin_dir, public_port, protocol)
     add_traefik_entrypoint(pangolin_dir, public_port, protocol)
-    if no_restart:
+    provisioned = port_provisioned(pangolin_dir, public_port, protocol)
+    if no_restart and not provisioned:
         # Порт в файлах есть, но Gerbil/Traefik его ещё не подхватили.
         # Работать начнёт только после `apply` — один рестарт на все правки.
         pending = True
     else:
-        restart_stack(pangolin_dir)
+        if not provisioned:
+            restart_stack(pangolin_dir)
+        # проверка слушателя — без рестарта, просто чтение ss внутри Gerbil
         verify_listener(public_port, protocol)
         pending = False
     fw = firewall_hint(public_port, protocol)
@@ -505,6 +556,16 @@ def do_delete(cfg, name=None, public_port=None, protocol=None, dry_run=False,
     except ToolError as e:
         if "404" not in str(e):
             raise
+    # Порт из заранее заведённого диапазона принадлежит диапазону, а не
+    # правилу: файлы не трогаем, порт остаётся слушаться для следующих правил.
+    provisioned = port_provisioned(pangolin_dir, rule["public_port"],
+                                   rule["protocol"])
+    if provisioned:
+        save_state(cfg["state_file"],
+                   [r for r in state if r["name"] != rule["name"]])
+        return {"deleted": rule, "pending_restart": False,
+                "note": "порт остался в диапазоне и слушается, готов к "
+                        "следующему правилу без рестарта"}
     remove_gerbil_port(pangolin_dir, rule["public_port"], rule["protocol"])
     remove_traefik_entrypoint(pangolin_dir, rule["public_port"], rule["protocol"])
     if no_restart:
@@ -785,6 +846,9 @@ def main(argv=None):
     d.add_argument("--no-restart", action="store_true",
                    help="не рестартить стек сейчас, применить позже через apply")
     sub.add_parser("apply", help="один рестарт стека на все правки + проверка")
+    rg = sub.add_parser("range", help="заранее завести диапазон портов: один рестарт, потом add/delete без рестартов")
+    rg.add_argument("--start", type=int, required=True)
+    rg.add_argument("--end", type=int, required=True)
     c = sub.add_parser("check", help="проверить слои правила")
     c.add_argument("--name")
     sub.add_parser("sync", help="забрать уже созданные руками ресурсы")
@@ -799,6 +863,7 @@ def main(argv=None):
 
     args = p.parse_args(argv)
     cfg = load_config(args.config)
+    cfg["config_path"] = args.config
     try:
         if args.cmd == "sites":
             api = PangolinApi(cfg["api_base"], cfg["api_key"], cfg["org_id"])
@@ -828,6 +893,9 @@ def main(argv=None):
             print(json.dumps(res, indent=2, ensure_ascii=False))
         elif args.cmd == "apply":
             print(json.dumps(do_apply(cfg), indent=2, ensure_ascii=False))
+        elif args.cmd == "range":
+            print(json.dumps(do_range(cfg, args.start, args.end),
+                             indent=2, ensure_ascii=False))
         elif args.cmd == "check":
             for r in do_check(cfg, args.name):
                 mark = "OK" if r["ok"] else "FAIL"

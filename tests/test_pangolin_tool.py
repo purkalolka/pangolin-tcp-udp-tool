@@ -117,6 +117,8 @@ class BatchTests(unittest.TestCase):
                 "pangolin_dir": self.pang, "ui_token": "t"}
 
     def test_delete_no_restart_skips_restart(self):
+        # порт правила заведён в фикстурах (как после range) — удаление
+        # не трогает файлы и не рестартит вообще
         cfg = self._cfg_with_rule()
         api = mock.Mock()
         with mock.patch.object(pt, "PangolinApi", return_value=api), \
@@ -125,8 +127,22 @@ class BatchTests(unittest.TestCase):
             res = pt.do_delete(cfg, name="rdp-pc1", no_restart=True)
         rs.assert_not_called()
         vl.assert_not_called()
-        self.assertTrue(res["pending_restart"])
+        self.assertFalse(res["pending_restart"])
         self.assertEqual(pt.load_state(cfg["state_file"]), [])
+        self.assertTrue(pt.port_provisioned(self.pang, 29378, "tcp"))
+
+    def test_delete_no_restart_unprovisioned_pending(self):
+        cfg = self._cfg_with_rule()
+        state = json.load(open(cfg["state_file"]))
+        state[0]["public_port"] = 29379
+        with open(cfg["state_file"], "w") as f:
+            json.dump(state, f)
+        api = mock.Mock()
+        with mock.patch.object(pt, "PangolinApi", return_value=api), \
+             mock.patch.object(pt, "restart_stack") as rs:
+            res = pt.do_delete(cfg, name="rdp-pc1", no_restart=True)
+        rs.assert_not_called()
+        self.assertTrue(res["pending_restart"])
 
     def test_apply_restarts_once_and_verifies(self):
         cfg = self._cfg_with_rule()
@@ -136,6 +152,52 @@ class BatchTests(unittest.TestCase):
         rs.assert_called_once()
         vl.assert_called_once_with(29378, "tcp")
         self.assertTrue(res["all_ok"])
+
+    def test_port_provisioned_needs_both_sides(self):
+        self.assertFalse(pt.port_provisioned(self.pang, 29400, "tcp"))
+        pt.add_gerbil_port(self.pang, 29400, "tcp")
+        # только Gerbil, без entrypoint — ещё не готов
+        self.assertFalse(pt.port_provisioned(self.pang, 29400, "tcp"))
+        pt.add_traefik_entrypoint(self.pang, 29400, "tcp")
+        self.assertTrue(pt.port_provisioned(self.pang, 29400, "tcp"))
+        self.assertFalse(pt.port_provisioned(self.pang, 29400, "udp"))
+        self.assertFalse(pt.port_provisioned(self.pang, 29401, "tcp"))
+
+    def test_range_writes_ports_and_config_once(self):
+        cfg_path = os.path.join(self.d, "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"org_id": "emae", "api_key": "k"}, f)
+        cfg = {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
+               "org_id": "emae", "state_file": os.path.join(self.d, "r.json"),
+               "pangolin_dir": self.pang, "ui_token": "t",
+               "config_path": cfg_path}
+        with mock.patch.object(pt, "restart_stack") as rs, \
+             mock.patch.object(pt, "verify_listener"):
+            res = pt.do_range(cfg, 29500, 29501)
+        rs.assert_called_once()
+        self.assertEqual(res["range"], [29500, 29501])
+        self.assertTrue(pt.port_provisioned(self.pang, 29500, "tcp"))
+        self.assertTrue(pt.port_provisioned(self.pang, 29501, "udp"))
+        with open(cfg_path) as f:
+            self.assertEqual(json.load(f)["port_ranges"], [[29500, 29501]])
+
+    def test_add_in_range_skips_restart(self):
+        cfg = self._cfg_with_rule()
+        cfg["state_file"] = os.path.join(self.d, "empty.json")
+        pt.add_gerbil_port(self.pang, 29400, "tcp")
+        pt.add_traefik_entrypoint(self.pang, 29400, "tcp")
+        api = mock.Mock()
+        api.list_sites.return_value = [{"siteId": 1, "name": "wsl"}]
+        api.create_resource.return_value = {"resourceId": 9}
+        api.create_target.return_value = {}
+        with mock.patch.object(pt, "PangolinApi", return_value=api), \
+             mock.patch.object(pt, "restart_stack") as rs, \
+             mock.patch.object(pt, "verify_listener") as vl:
+            res = pt.do_add(cfg, "range-echo", "tcp", 29400, "wsl",
+                            "127.0.0.1", 29401)
+        rs.assert_not_called()
+        vl.assert_called_once_with(29400, "tcp")
+        self.assertFalse(res["pending_restart"])
 
 
 class ApiPayloadTests(unittest.TestCase):

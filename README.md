@@ -74,6 +74,28 @@ pangolin-tool add --name test --protocol tcp --public-port 29380 \
   --site wsl --target-ip 127.0.0.1 --target-port 3389 --dry-run
 ```
 
+## Рестарт и пакетный режим
+
+Каждый `add`/`delete` по умолчанию пересоздаёт Gerbil и Traefik: entrypoint
+Traefik и порт Gerbil — статическая конфигурация, без пересоздания она не
+подхватится. На время рестарта (обычно 10–30 секунд) недоступны панель,
+все HTTP-маршруты и все raw-порты, а туннели Newt переподключаются сами.
+Это нормально, не баг.
+
+Чтобы не ронять стек на каждое правило, делай правки пачкой:
+
+```bash
+pangolin-tool add --name rdp-pc1 --protocol tcp --public-port 29378 \
+  --site wsl --target-ip 127.0.0.1 --target-port 3389 --no-restart
+pangolin-tool add --name rdp-pc1-udp --protocol udp --public-port 29378 \
+  --site wsl --target-ip 127.0.0.1 --target-port 3389 --no-restart
+pangolin-tool delete --name старое-правило --no-restart
+pangolin-tool apply   # один рестарт на все правки + проверка слушателей
+```
+
+Пока не вызван `apply`, новые правила уже есть в Pangolin, но порты ещё не
+слушаются, а удалённые — ещё слушаются.
+
 ## Нода в WSL (важно)
 
 Если Newt крутится в WSL, а сервис — на самой Windows (например RDP на 3389),
