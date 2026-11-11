@@ -140,6 +140,28 @@ class ApiPayloadTests(unittest.TestCase):
                           "subnet": "100.89.128.4/30", "newtId": "abc",
                           "secret": "s3cr3t"})
 
+    def test_site_create_returns_connect_command(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        cfg = {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
+               "org_id": "emae", "state_file": os.path.join(tmp, "r.json"),
+               "pangolin_dir": self.pdir, "ui_token": "t"}
+        api = mock.Mock()
+        api.create_site.return_value = (
+            {"siteId": 9, "name": "node-1", "subnet": "100.89.128.4/30"},
+            {"endpoint": "tun.emae.su", "newtId": "abc",
+             "newtSecret": "s3cr3t", "subnet": "100.89.128.4/30"})
+        with mock.patch.object(pt, "PangolinApi", return_value=api):
+            res = pt.do_site_create(cfg, "node-1")
+        cmd = res["connect_command"]
+        self.assertIn("docker run -d --name newt --network host", cmd)
+        self.assertIn("-e PANGOLIN_ENDPOINT=https://tun.emae.su", cmd)
+        self.assertIn("-e NEWT_ID=abc", cmd)
+        self.assertIn("-e NEWT_SECRET=s3cr3t", cmd)
+        self.assertTrue(cmd.endswith("fosrl/newt:latest"))
+        # .env остаётся как запасной вариант
+        self.assertTrue(os.path.exists(res["credentials_file"]))
+
 
 if __name__ == "__main__":
     unittest.main()

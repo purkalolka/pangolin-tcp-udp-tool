@@ -53,10 +53,14 @@ sudo bash install.sh
 ```bash
 pangolin-tool sites
 pangolin-tool site-create --name node-1
-# секрет Newt — только в /etc/pangolin-tool/sites/node-1.env (600) на сервере.
-# На ноде: docker run -d --name newt --network host --cap-add NET_ADMIN \
-#   --env-file /etc/pangolin-tool/sites/node-1.env fosrl/newt:latest
-# (файл .env надо перенести на ноду самому, в чат/репозиторий он не попадает)
+# выдаст готовую команду для ноды — один раз вставить в терминал ноды,
+# и Newt поднимется, никаких файлов перекидывать не надо:
+# docker run -d --name newt --network host --cap-add NET_ADMIN \
+#   -e PANGOLIN_ENDPOINT=https://tun.emae.su \
+#   -e NEWT_ID=... -e NEWT_SECRET=... fosrl/newt:latest
+# ВНИМАНИЕ: в команде есть секрет, не кидай её в чат и в репозиторий.
+# Запасной вариант — /etc/pangolin-tool/sites/node-1.env (600) на сервере,
+# с ним: docker run ... --env-file /etc/pangolin-tool/sites/node-1.env ...
 pangolin-tool add --name rdp-pc1 --protocol tcp --public-port 29378 \
   --site node-1 --target-ip 127.0.0.1 --target-port 3389
 pangolin-tool add --name rdp-pc1-udp --protocol udp --public-port 29378 \

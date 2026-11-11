@@ -47,7 +47,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -571,8 +571,11 @@ def do_sync(cfg):
 
 # ---------------------------------------------------------------- сайты
 def do_site_create(cfg, name):
-    """Создать сайт Newt. Секрет Newt — только в файл на сервере
-    /etc/pangolin-tool/sites/<name>.env (600), в вывод — никогда."""
+    """Создать сайт Newt и выдать готовую команду для ноды: один раз
+    вставил — работает, никаких файлов перекидывать не надо.
+    Команда содержит секрет Newt, поэтому она печатается только
+    в терминал на сервере — не в чат и не в репозиторий. .env-файл
+    на сервере остаётся как запасной вариант."""
     if not NAME_RE.match(name or ""):
         raise ToolError("имя сайта: только латиница/цифры/_/-")
     api = PangolinApi(cfg["api_base"], cfg["api_key"], cfg["org_id"])
@@ -585,11 +588,14 @@ def do_site_create(cfg, name):
         f.write(f"NEWT_ID={d['newtId']}\n")
         f.write(f"NEWT_SECRET={d['newtSecret']}\n")
     os.chmod(env_path, 0o600)
+    cmd = ("docker run -d --name newt --network host --cap-add NET_ADMIN "
+           f"-e PANGOLIN_ENDPOINT=https://{d.get('endpoint')} "
+           f"-e NEWT_ID={d['newtId']} -e NEWT_SECRET={d['newtSecret']} "
+           "fosrl/newt:latest")
     return {"site_id": site.get("siteId"), "name": site.get("name"),
             "subnet": site.get("subnet") or d.get("subnet"),
             "credentials_file": env_path,
-            "hint": "на ноде: docker run с --env-file из этого файла, "
-                    "образ fosrl/newt, сеть host"}
+            "connect_command": cmd}
 
 
 def do_site_delete(cfg, name=None, site_id=None):
@@ -792,8 +798,21 @@ def main(argv=None):
         elif args.cmd == "sync":
             print(json.dumps(do_sync(cfg), indent=2, ensure_ascii=False))
         elif args.cmd == "site-create":
-            print(json.dumps(do_site_create(cfg, args.name),
-                             indent=2, ensure_ascii=False))
+            res = do_site_create(cfg, args.name)
+            print(f"Сайт создан: {res['name']} (id={res['site_id']}, "
+                  f"subnet={res['subnet']})")
+            print()
+            print("Команда для ноды — вставить один раз в терминал ноды:")
+            print(res["connect_command"])
+            print()
+            print("ВНИМАНИЕ: в команде есть секрет Newt. Не кидай её в чат, "
+                  "в репозиторий и не показывай посторонним. Она останется "
+                  "в истории шелла на ноде — после запуска можно почистить: "
+                  "history -d $(history 1 | cut -c1-5) в bash, или просто "
+                  "не переживай: кто имеет доступ к Docker на ноде, и так "
+                  "увидит секрет через docker inspect.")
+            print(f"Запасной вариант: {res['credentials_file']} (600) на "
+                  "сервере, с --env-file.")
         elif args.cmd == "site-delete":
             if not args.name and not args.id:
                 raise ToolError("site-delete: нужен --name или --id")
