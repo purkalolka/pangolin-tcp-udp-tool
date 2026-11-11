@@ -52,8 +52,13 @@ sudo bash install.sh
 
 ```bash
 pangolin-tool sites
+pangolin-tool site-create --name node-1
+# секрет Newt — только в /etc/pangolin-tool/sites/node-1.env (600) на сервере.
+# На ноде: docker run -d --name newt --network host --cap-add NET_ADMIN \
+#   --env-file /etc/pangolin-tool/sites/node-1.env fosrl/newt:latest
+# (файл .env надо перенести на ноду самому, в чат/репозиторий он не попадает)
 pangolin-tool add --name rdp-pc1 --protocol tcp --public-port 29378 \
-  --site wsl --target-ip 127.0.0.1 --target-port 3389
+  --site node-1 --target-ip 127.0.0.1 --target-port 3389
 pangolin-tool add --name rdp-pc1-udp --protocol udp --public-port 29378 \
   --site wsl --target-ip 127.0.0.1 --target-port 3389
 pangolin-tool add --name minecraft --protocol tcp --public-port 25565 \

@@ -47,7 +47,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -193,6 +193,23 @@ class PangolinApi:
     def list_targets(self, resource_id):
         data = self._req("GET", f"/resource/{resource_id}/targets")
         return data.get("targets", []) if isinstance(data, dict) else data
+
+    def pick_site_defaults(self):
+        return self._req("GET", f"/org/{self.org_id}/pick-site-defaults")
+
+    def create_site(self, name):
+        """Минимальное тело — лишние поля (pubKey/address) дают 400.
+        Секрет Newt возвращается только в pick-site-defaults, а не
+        в ответе создания, поэтому его надо сохранить из defaults."""
+        d = self.pick_site_defaults()
+        site = self._req("PUT", f"/org/{self.org_id}/site",
+                         {"name": name, "type": "newt",
+                          "exitNodeId": d["exitNodeId"], "subnet": d["subnet"],
+                          "newtId": d["newtId"], "secret": d["newtSecret"]})
+        return site, d
+
+    def delete_site(self, site_id):
+        return self._req("DELETE", f"/site/{site_id}")
 
 
 def resolve_site(api, site_ref):
@@ -552,6 +569,43 @@ def do_sync(cfg):
     return {"added": added, "os_ports": os_ports(cfg["pangolin_dir"])}
 
 
+# ---------------------------------------------------------------- сайты
+def do_site_create(cfg, name):
+    """Создать сайт Newt. Секрет Newt — только в файл на сервере
+    /etc/pangolin-tool/sites/<name>.env (600), в вывод — никогда."""
+    if not NAME_RE.match(name or ""):
+        raise ToolError("имя сайта: только латиница/цифры/_/-")
+    api = PangolinApi(cfg["api_base"], cfg["api_key"], cfg["org_id"])
+    site, d = api.create_site(name)
+    sites_dir = os.path.join(os.path.dirname(cfg["state_file"]), "sites")
+    os.makedirs(sites_dir, exist_ok=True)
+    env_path = os.path.join(sites_dir, f"{name}.env")
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.write(f"PANGOLIN_ENDPOINT=https://{d.get('endpoint')}\n")
+        f.write(f"NEWT_ID={d['newtId']}\n")
+        f.write(f"NEWT_SECRET={d['newtSecret']}\n")
+    os.chmod(env_path, 0o600)
+    return {"site_id": site.get("siteId"), "name": site.get("name"),
+            "subnet": site.get("subnet") or d.get("subnet"),
+            "credentials_file": env_path,
+            "hint": "на ноде: docker run с --env-file из этого файла, "
+                    "образ fosrl/newt, сеть host"}
+
+
+def do_site_delete(cfg, name=None, site_id=None):
+    api = PangolinApi(cfg["api_base"], cfg["api_key"], cfg["org_id"])
+    if site_id is None:
+        site = resolve_site(api, name)
+        site_id = site["siteId"]
+        name = site.get("name")
+    api.delete_site(site_id)
+    env_path = os.path.join(os.path.dirname(cfg["state_file"]), "sites",
+                            f"{name}.env") if name else None
+    if env_path and os.path.exists(env_path):
+        os.remove(env_path)
+    return {"deleted_site_id": site_id, "name": name}
+
+
 # ---------------------------------------------------------------- веб-панель
 HTML_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <title>Pangolin raw TCP/UDP</title><style>
@@ -692,6 +746,11 @@ def main(argv=None):
     c = sub.add_parser("check", help="проверить слои правила")
     c.add_argument("--name")
     sub.add_parser("sync", help="забрать уже созданные руками ресурсы")
+    sc = sub.add_parser("site-create", help="создать сайт Newt для ноды")
+    sc.add_argument("--name", required=True)
+    sd = sub.add_parser("site-delete", help="удалить сайт Newt")
+    sd.add_argument("--name")
+    sd.add_argument("--id", type=int)
     s = sub.add_parser("serve", help="веб-панель")
     s.add_argument("--bind", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8090)
@@ -732,6 +791,15 @@ def main(argv=None):
                       f"listening_in_gerbil={r['listening_in_gerbil']}")
         elif args.cmd == "sync":
             print(json.dumps(do_sync(cfg), indent=2, ensure_ascii=False))
+        elif args.cmd == "site-create":
+            print(json.dumps(do_site_create(cfg, args.name),
+                             indent=2, ensure_ascii=False))
+        elif args.cmd == "site-delete":
+            if not args.name and not args.id:
+                raise ToolError("site-delete: нужен --name или --id")
+            print(json.dumps(do_site_delete(cfg, name=args.name,
+                                            site_id=args.id),
+                             indent=2, ensure_ascii=False))
         elif args.cmd == "serve":
             serve(cfg, args.bind, args.port)
     except ToolError as e:

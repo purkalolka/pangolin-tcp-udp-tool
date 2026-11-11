@@ -118,6 +118,28 @@ class ApiPayloadTests(unittest.TestCase):
                          {"name": "rdp-pc1", "http": False,
                           "protocol": "udp", "proxyPort": 29378})
 
+    def test_create_site_minimal_body(self):
+        api = pt.PangolinApi("http://127.0.0.1:3003/v1", "k", "emae")
+        defaults = {"exitNodeId": 1, "subnet": "100.89.128.4/30",
+                    "newtId": "abc", "newtSecret": "s3cr3t",
+                    "endpoint": "tun.emae.su"}
+        calls = []
+
+        def fake_req(method, path, body=None):
+            calls.append((method, path, body))
+            if "pick-site-defaults" in path:
+                return defaults
+            return {"siteId": 7, "name": "node-1"}
+
+        with mock.patch.object(api, "_req", side_effect=fake_req):
+            site, d = api.create_site("node-1")
+        self.assertEqual(site["siteId"], 7)
+        # лишние pubKey/address дают 400 — тело только минимальное
+        self.assertEqual(calls[1][2],
+                         {"name": "node-1", "type": "newt", "exitNodeId": 1,
+                          "subnet": "100.89.128.4/30", "newtId": "abc",
+                          "secret": "s3cr3t"})
+
 
 if __name__ == "__main__":
     unittest.main()
