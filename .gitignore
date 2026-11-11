@@ -1,0 +1,5 @@
+config.json
+rules.json
+*.bak
+__pycache__/
+.pytest_cache/
