@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -443,6 +443,51 @@ def port_provisioned(pangolin_dir, port, protocol):
         in_compose = re.search(rf"-\s+{port}:{port}/udp\b", compose) is not None
     in_traefik = f"{entrypoint_name(port, protocol)}:" in traefik
     return in_compose and in_traefik
+
+
+def _subtract_range(ranges, start, end):
+    """Вычесть [start, end] из списка диапазонов [a, b]."""
+    out = []
+    for a, b in ranges:
+        if end < a or start > b:
+            out.append((a, b))
+            continue
+        if a < start:
+            out.append((a, start - 1))
+        if b > end:
+            out.append((end + 1, b))
+    return sorted(out)
+
+
+def do_range_remove(cfg, start, end):
+    """Убрать порты из диапазона. Откажет, если на них ещё есть правила, —
+    сначала delete правил, потом уменьшение. Один рестарт."""
+    if not (1 <= start <= 65535 and 1 <= end <= 65535 and start <= end):
+        raise ToolError("range-remove: нужны --start и --end, 1..65535, "
+                        "start <= end")
+    state = load_state(cfg["state_file"])
+    busy = [r for r in state if start <= r["public_port"] <= end]
+    if busy:
+        names = ", ".join(f"{r['name']} ({r['protocol']} "
+                          f"{r['public_port']})" for r in busy)
+        raise ToolError("на этих портах ещё есть правила: " + names +
+                        ". Сначала удали их через delete, потом уменьшай "
+                        "диапазон.")
+    for port in range(start, end + 1):
+        for proto in ("tcp", "udp"):
+            remove_gerbil_port(cfg["pangolin_dir"], port, proto)
+            remove_traefik_entrypoint(cfg["pangolin_dir"], port, proto)
+    restart_stack(cfg["pangolin_dir"])
+    path = cfg.get("config_path", DEFAULT_CONFIG)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    ranges = [tuple(r) for r in data.get("port_ranges", [])]
+    data["port_ranges"] = [list(r) for r in _subtract_range(ranges, start, end)]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.chmod(path, 0o600)
+    return {"removed_range": [start, end],
+            "port_ranges_left": data["port_ranges"]}
 
 
 def do_range(cfg, start, end):
@@ -881,6 +926,9 @@ def main(argv=None):
     rg = sub.add_parser("range", help="заранее завести диапазон портов: один рестарт, потом add/delete без рестартов")
     rg.add_argument("--start", type=int, required=True)
     rg.add_argument("--end", type=int, required=True)
+    rr = sub.add_parser("range-remove", help="убрать порты из диапазона (сначала удали правила на них)")
+    rr.add_argument("--start", type=int, required=True)
+    rr.add_argument("--end", type=int, required=True)
     c = sub.add_parser("check", help="проверить слои правила")
     c.add_argument("--name")
     sub.add_parser("sync", help="забрать уже созданные руками ресурсы")
@@ -927,6 +975,9 @@ def main(argv=None):
             print(json.dumps(do_apply(cfg), indent=2, ensure_ascii=False))
         elif args.cmd == "range":
             print(json.dumps(do_range(cfg, args.start, args.end),
+                             indent=2, ensure_ascii=False))
+        elif args.cmd == "range-remove":
+            print(json.dumps(do_range_remove(cfg, args.start, args.end),
                              indent=2, ensure_ascii=False))
         elif args.cmd == "check":
             for r in do_check(cfg, args.name):

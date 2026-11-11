@@ -153,6 +153,46 @@ class BatchTests(unittest.TestCase):
         vl.assert_called_once_with(29378, "tcp")
         self.assertTrue(res["all_ok"])
 
+    def test_subtract_range(self):
+        self.assertEqual(pt._subtract_range([(29400, 29409)], 29405, 29409),
+                         [(29400, 29404)])
+        self.assertEqual(pt._subtract_range([(29400, 29409)], 29400, 29404),
+                         [(29405, 29409)])
+        self.assertEqual(pt._subtract_range([(29400, 29409)], 29403, 29406),
+                         [(29400, 29402), (29407, 29409)])
+        self.assertEqual(pt._subtract_range([(29400, 29409)], 29400, 29409), [])
+        self.assertEqual(pt._subtract_range([(29400, 29409)], 29500, 29509),
+                         [(29400, 29409)])
+
+    def test_range_remove_refuses_busy_ports(self):
+        cfg = self._cfg_with_rule()  # правило rdp-pc1 на 29378
+        with mock.patch.object(pt, "restart_stack") as rs:
+            with self.assertRaises(pt.ToolError):
+                pt.do_range_remove(cfg, 29378, 29378)
+            rs.assert_not_called()
+
+    def test_range_remove_cleans_files_and_config(self):
+        cfg_path = os.path.join(self.d, "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"org_id": "emae", "api_key": "k",
+                       "port_ranges": [[29500, 29501]]}, f)
+        cfg = {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
+               "org_id": "emae", "state_file": os.path.join(self.d, "r.json"),
+               "pangolin_dir": self.pang, "ui_token": "t",
+               "config_path": cfg_path}
+        with open(cfg["state_file"], "w") as f:
+            json.dump([], f)
+        for port in (29500, 29501):
+            for proto in ("tcp", "udp"):
+                pt.add_gerbil_port(self.pang, port, proto)
+                pt.add_traefik_entrypoint(self.pang, port, proto)
+        with mock.patch.object(pt, "restart_stack") as rs:
+            res = pt.do_range_remove(cfg, 29501, 29501)
+        rs.assert_called_once()
+        self.assertEqual(res["port_ranges_left"], [[29500, 29500]])
+        self.assertFalse(pt.port_provisioned(self.pang, 29501, "tcp"))
+        self.assertTrue(pt.port_provisioned(self.pang, 29500, "tcp"))
+
     def test_host_port_in_use(self):
         import socket as _s
         srv = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
