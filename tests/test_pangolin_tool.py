@@ -184,6 +184,12 @@ class BatchTests(unittest.TestCase):
         with open(cfg_path) as f:
             self.assertEqual(json.load(f)["port_ranges"], [])
 
+    def test_ranges_returns_config_ranges(self):
+        cfg = {"port_ranges": [[29400, 29409], [29500, 29500]]}
+        self.assertEqual(pt.do_ranges(cfg)["port_ranges"],
+                         [[29400, 29409], [29500, 29500]])
+        self.assertEqual(pt.do_ranges({})["port_ranges"], [])
+
     def test_range_clear_nothing_to_do(self):
         cfg_path = os.path.join(self.d, "config.json")
         with open(cfg_path, "w") as f:

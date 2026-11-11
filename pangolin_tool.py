@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -457,6 +457,11 @@ def _subtract_range(ranges, start, end):
         if b > end:
             out.append((end + 1, b))
     return sorted(out)
+
+
+def do_ranges(cfg):
+    """Текущие диапазоны из конфига."""
+    return {"port_ranges": cfg.get("port_ranges", [])}
 
 
 def do_range_clear(cfg):
@@ -967,6 +972,7 @@ def main(argv=None):
     rr.add_argument("--start", type=int, required=True)
     rr.add_argument("--end", type=int, required=True)
     sub.add_parser("range-clear", help="убрать все диапазоны, вернуть исходный вариант")
+    sub.add_parser("ranges", help="список текущих диапазонов")
     c = sub.add_parser("check", help="проверить слои правила")
     c.add_argument("--name")
     sub.add_parser("sync", help="забрать уже созданные руками ресурсы")
@@ -997,6 +1003,13 @@ def main(argv=None):
                       f"-> {r['target_ip']}:{r['target_port']}\t"
                       f"site={r.get('site_name')}\tresource={r.get('resource_id')}")
             print(f"ОС: прописаны порты {os_ports(cfg['pangolin_dir'])}")
+            ranges = cfg.get("port_ranges", [])
+            if ranges:
+                desc = ", ".join(f"{a}-{b} ({b - a + 1} портов)"
+                                 for a, b in ranges)
+                print(f"Диапазоны: {desc}")
+            else:
+                print("Диапазоны: нет (add/delete с рестартом, range — завести)")
         elif args.cmd == "add":
             res = do_add(cfg, args.name, args.protocol, args.public_port,
                          args.site, args.target_ip, args.target_port,
@@ -1019,6 +1032,12 @@ def main(argv=None):
                              indent=2, ensure_ascii=False))
         elif args.cmd == "range-clear":
             print(json.dumps(do_range_clear(cfg), indent=2, ensure_ascii=False))
+        elif args.cmd == "ranges":
+            ranges = do_ranges(cfg)["port_ranges"]
+            if not ranges:
+                print("диапазонов нет")
+            for a, b in ranges:
+                print(f"{a}-{b} ({b - a + 1} портов)")
         elif args.cmd == "check":
             for r in do_check(cfg, args.name):
                 mark = "OK" if r["ok"] else "FAIL"
