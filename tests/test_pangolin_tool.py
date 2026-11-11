@@ -87,6 +87,57 @@ class ValidationTests(unittest.TestCase):
         pt.validate_rule("rdp-pc2", "udp", 29379, "127.0.0.1", 3389)
 
 
+class BatchTests(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.pang = os.path.join(self.d, "pangolin")
+        os.makedirs(os.path.join(self.pang, "config", "traefik"))
+        shutil.copy(os.path.join(FIX, "docker-compose.yml"),
+                    os.path.join(self.pang, "docker-compose.yml"))
+        shutil.copy(os.path.join(FIX, "traefik_config.yml"),
+                    os.path.join(self.pang, "config", "traefik", "traefik_config.yml"))
+        with open(os.path.join(self.pang, "config", "config.yml"), "w") as f:
+            f.write("flags:\n    allow_raw_resources: true\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def _cfg_with_rule(self):
+        state = os.path.join(self.d, "rules.json")
+        rule = {"name": "rdp-pc1", "protocol": "tcp", "public_port": 29378,
+                "site_id": 1, "site_name": "wsl", "target_ip": "127.0.0.1",
+                "target_port": 3389, "resource_id": 3}
+        with open(state, "w") as f:
+            json.dump([rule], f)
+        # порт уже прописан в фикстурах, как после add
+        pt.add_gerbil_port(self.pang, 29378, "tcp")
+        pt.add_traefik_entrypoint(self.pang, 29378, "tcp")
+        return {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
+                "org_id": "emae", "state_file": state,
+                "pangolin_dir": self.pang, "ui_token": "t"}
+
+    def test_delete_no_restart_skips_restart(self):
+        cfg = self._cfg_with_rule()
+        api = mock.Mock()
+        with mock.patch.object(pt, "PangolinApi", return_value=api), \
+             mock.patch.object(pt, "restart_stack") as rs, \
+             mock.patch.object(pt, "verify_listener") as vl:
+            res = pt.do_delete(cfg, name="rdp-pc1", no_restart=True)
+        rs.assert_not_called()
+        vl.assert_not_called()
+        self.assertTrue(res["pending_restart"])
+        self.assertEqual(pt.load_state(cfg["state_file"]), [])
+
+    def test_apply_restarts_once_and_verifies(self):
+        cfg = self._cfg_with_rule()
+        with mock.patch.object(pt, "restart_stack") as rs, \
+             mock.patch.object(pt, "verify_listener") as vl:
+            res = pt.do_apply(cfg)
+        rs.assert_called_once()
+        vl.assert_called_once_with(29378, "tcp")
+        self.assertTrue(res["all_ok"])
+
+
 class ApiPayloadTests(unittest.TestCase):
     def test_create_resource_uses_mode_first(self):
         api = pt.PangolinApi("http://127.0.0.1:3003/v1", "k", "emae")

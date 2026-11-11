@@ -74,6 +74,27 @@ pangolin-tool add --name test --protocol tcp --public-port 29380 \
   --site wsl --target-ip 127.0.0.1 --target-port 3389 --dry-run
 ```
 
+## Нода в WSL (важно)
+
+Если Newt крутится в WSL, а сервис — на самой Windows (например RDP на 3389),
+`--target-ip 127.0.0.1` НЕ сработает: глазами WSL `127.0.0.1` — это сам WSL,
+а не Windows. Бери IP Windows из WSL и ставь его целью:
+
+```bash
+grep nameserver /etc/resolv.conf   # IP Windows, обычно 172.x.x.1
+nc -vz <этот-IP> 3389              # проверка: должен пройти
+pangolin-tool add --name rdp-pc1 --protocol tcp --public-port 29378 \
+  --site wsl --target-ip <этот-IP> --target-port 3389
+```
+
+Нюанс: этот IP может поменяться после перезагрузки Windows/WSL — если RDP
+вдруг перестал работать, проверь `resolv.conf` заново и пересоздай правило
+с новым IP. Чистый вариант без этого — запустить Newt прямо на Windows
+(файл `newt.exe` из релизов fosrl/newt, с теми же переменными
+`PANGOLIN_ENDPOINT`/`NEWT_ID`/`NEWT_SECRET`): тогда `127.0.0.1` — это
+Windows, и цель `127.0.0.1:3389` работает всегда. Перед этим останови
+Docker-Newt, два агента с одним сайтом одновременно не запускай.
+
 Веб-панель — только через SSH-туннель, см. вывод `install.sh`.
 
 ## Важно

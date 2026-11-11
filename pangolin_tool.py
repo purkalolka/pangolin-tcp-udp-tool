@@ -47,7 +47,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -413,7 +413,7 @@ def firewall_hint(port, protocol):
 
 # ---------------------------------------------------------------- операции
 def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
-           dry_run=False):
+           dry_run=False, no_restart=False):
     validate_rule(name, protocol, public_port, target_ip, target_port)
     state = load_state(cfg["state_file"])
     if any(r["name"] == name for r in state):
@@ -454,8 +454,14 @@ def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
     changed_flag = ensure_raw_flag(pangolin_dir)
     add_gerbil_port(pangolin_dir, public_port, protocol)
     add_traefik_entrypoint(pangolin_dir, public_port, protocol)
-    restart_stack(pangolin_dir)
-    verify_listener(public_port, protocol)
+    if no_restart:
+        # Порт в файлах есть, но Gerbil/Traefik его ещё не подхватили.
+        # Работать начнёт только после `apply` — один рестарт на все правки.
+        pending = True
+    else:
+        restart_stack(pangolin_dir)
+        verify_listener(public_port, protocol)
+        pending = False
     fw = firewall_hint(public_port, protocol)
     rule = {
         "name": name, "protocol": protocol, "public_port": public_port,
@@ -466,10 +472,12 @@ def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
     }
     state.append(rule)
     save_state(cfg["state_file"], state)
-    return {"rule": rule, "raw_flag_added": changed_flag, "firewall": fw}
+    return {"rule": rule, "raw_flag_added": changed_flag, "firewall": fw,
+            "pending_restart": pending}
 
 
-def do_delete(cfg, name=None, public_port=None, protocol=None, dry_run=False):
+def do_delete(cfg, name=None, public_port=None, protocol=None, dry_run=False,
+              no_restart=False):
     state = load_state(cfg["state_file"])
     rule = None
     if name:
@@ -499,6 +507,10 @@ def do_delete(cfg, name=None, public_port=None, protocol=None, dry_run=False):
             raise
     remove_gerbil_port(pangolin_dir, rule["public_port"], rule["protocol"])
     remove_traefik_entrypoint(pangolin_dir, rule["public_port"], rule["protocol"])
+    if no_restart:
+        save_state(cfg["state_file"],
+                   [r for r in state if r["name"] != rule["name"]])
+        return {"deleted": rule, "pending_restart": True}
     restart_stack(pangolin_dir)
     try:
         verify_listener(rule["public_port"], rule["protocol"])
@@ -508,7 +520,25 @@ def do_delete(cfg, name=None, public_port=None, protocol=None, dry_run=False):
             raise
     save_state(cfg["state_file"],
                [r for r in state if r["name"] != rule["name"]])
-    return {"deleted": rule}
+    return {"deleted": rule, "pending_restart": False}
+
+
+def do_apply(cfg):
+    """Один рестарт на все накопленные правки + проверка слушателей."""
+    state = load_state(cfg["state_file"])
+    restart_stack(cfg["pangolin_dir"])
+    results = []
+    for r in state:
+        try:
+            verify_listener(r["public_port"], r["protocol"])
+            results.append({"name": r["name"], "protocol": r["protocol"],
+                            "public_port": r["public_port"], "ok": True})
+        except ToolError as e:
+            results.append({"name": r["name"], "protocol": r["protocol"],
+                            "public_port": r["public_port"], "ok": False,
+                            "error": str(e)})
+    return {"applied": results,
+            "all_ok": all(x["ok"] for x in results)}
 
 
 def do_check(cfg, name=None):
@@ -745,11 +775,16 @@ def main(argv=None):
     a.add_argument("--target-ip", default="127.0.0.1")
     a.add_argument("--target-port", type=int, required=True)
     a.add_argument("--dry-run", action="store_true")
+    a.add_argument("--no-restart", action="store_true",
+                   help="не рестартить стек сейчас, применить позже через apply")
     d = sub.add_parser("delete", help="удалить правило")
     d.add_argument("--name")
     d.add_argument("--public-port", type=int)
     d.add_argument("--protocol", choices=["tcp", "udp"])
     d.add_argument("--dry-run", action="store_true")
+    d.add_argument("--no-restart", action="store_true",
+                   help="не рестартить стек сейчас, применить позже через apply")
+    sub.add_parser("apply", help="один рестарт стека на все правки + проверка")
     c = sub.add_parser("check", help="проверить слои правила")
     c.add_argument("--name")
     sub.add_parser("sync", help="забрать уже созданные руками ресурсы")
@@ -782,14 +817,17 @@ def main(argv=None):
         elif args.cmd == "add":
             res = do_add(cfg, args.name, args.protocol, args.public_port,
                          args.site, args.target_ip, args.target_port,
-                         dry_run=args.dry_run)
+                         dry_run=args.dry_run, no_restart=args.no_restart)
             print(json.dumps(res, indent=2, ensure_ascii=False))
         elif args.cmd == "delete":
             if not args.name and not args.public_port:
                 raise ToolError("delete: нужен --name или --public-port")
             res = do_delete(cfg, name=args.name, public_port=args.public_port,
-                            protocol=args.protocol, dry_run=args.dry_run)
+                            protocol=args.protocol, dry_run=args.dry_run,
+                            no_restart=args.no_restart)
             print(json.dumps(res, indent=2, ensure_ascii=False))
+        elif args.cmd == "apply":
+            print(json.dumps(do_apply(cfg), indent=2, ensure_ascii=False))
         elif args.cmd == "check":
             for r in do_check(cfg, args.name):
                 mark = "OK" if r["ok"] else "FAIL"
