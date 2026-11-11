@@ -145,7 +145,7 @@ class ApiPayloadTests(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         cfg = {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
                "org_id": "emae", "state_file": os.path.join(tmp, "r.json"),
-               "pangolin_dir": self.pdir, "ui_token": "t"}
+               "pangolin_dir": tmp, "ui_token": "t"}
         api = mock.Mock()
         api.create_site.return_value = (
             {"siteId": 9, "name": "node-1", "subnet": "100.89.128.4/30"},
