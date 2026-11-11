@@ -40,6 +40,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -47,7 +48,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
@@ -412,6 +413,22 @@ def firewall_hint(port, protocol):
             f"{port}/{protocol}, как открыты 80/443/51820/21820.")
 
 # ---------------------------------------------------------------- операции
+def host_port_in_use(port, protocol):
+    """Занят ли порт уже каким-то процессом на самом хосте (не Docker).
+    Если да — публикация этого порта у Gerbil уронит весь стек при
+    рестарте, поэтому проверяем ДО правок."""
+    fam = socket.AF_INET
+    typ = socket.SOCK_STREAM if protocol == "tcp" else socket.SOCK_DGRAM
+    s = socket.socket(fam, typ)
+    try:
+        s.bind(("0.0.0.0", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
 def port_provisioned(pangolin_dir, port, protocol):
     """Порт заранее заведён: entrypoint есть в Traefik И порт опубликован
     у Gerbil. Тогда Pangolin подхватывает ресурс динамически, без рестарта
@@ -437,6 +454,15 @@ def do_range(cfg, start, end):
         raise ToolError("range: максимум 100 портов за раз — каждый "
                         "опубликованный порт это отдельный docker-proxy. "
                         "Разбей на несколько вызовов.")
+    for port in range(start, end + 1):
+        for proto in ("tcp", "udp"):
+            if port_provisioned(cfg["pangolin_dir"], port, proto):
+                continue  # уже заведён, docker-proxy его и держит — это норма
+            if host_port_in_use(port, proto):
+                raise ToolError(
+                    f"порт {port}/{proto} уже занят процессом на хосте. "
+                    "Публикация у Gerbil уронила бы стек при рестарте. "
+                    "Освободи порт или выбери другой диапазон.")
     for port in range(start, end + 1):
         for proto in ("tcp", "udp"):
             add_gerbil_port(cfg["pangolin_dir"], port, proto)
@@ -478,6 +504,12 @@ def do_add(cfg, name, protocol, public_port, site_ref, target_ip, target_port,
             f"порт {public_port}/{protocol} уже прописан в Gerbil/Traefik. "
             "Сделай sync, чтобы забрать его в состояние, или выбери другой порт."
         )
+    if host_port_in_use(public_port, protocol) \
+            and not port_provisioned(pangolin_dir, public_port, protocol):
+        raise ToolError(
+            f"порт {public_port}/{protocol} уже занят процессом на хосте. "
+            "Публикация у Gerbil уронила бы стек при рестарте. Освободи "
+            "порт или выбери другой.")
     plan = [
         f"Pangolin: ресурс {name!r} mode={protocol} proxyPort={public_port}",
         f"Pangolin: target site={site.get('name')} ({site.get('siteId')}) "

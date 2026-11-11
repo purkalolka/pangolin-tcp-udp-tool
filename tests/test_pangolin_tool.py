@@ -153,6 +153,41 @@ class BatchTests(unittest.TestCase):
         vl.assert_called_once_with(29378, "tcp")
         self.assertTrue(res["all_ok"])
 
+    def test_host_port_in_use(self):
+        import socket as _s
+        srv = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        try:
+            self.assertTrue(pt.host_port_in_use(port, "tcp"))
+            self.assertFalse(pt.host_port_in_use(port, "udp"))
+        finally:
+            srv.close()
+        self.assertFalse(pt.host_port_in_use(port, "tcp"))
+
+    def test_range_refuses_busy_port(self):
+        import socket as _s
+        srv = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        cfg_path = os.path.join(self.d, "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"org_id": "emae", "api_key": "k"}, f)
+        cfg = {"api_base": "http://127.0.0.1:3003/v1", "api_key": "k",
+               "org_id": "emae", "state_file": os.path.join(self.d, "r.json"),
+               "pangolin_dir": self.pang, "ui_token": "t",
+               "config_path": cfg_path}
+        try:
+            with mock.patch.object(pt, "restart_stack") as rs:
+                with self.assertRaises(pt.ToolError):
+                    pt.do_range(cfg, port, port)
+                rs.assert_not_called()
+            self.assertFalse(pt.port_provisioned(self.pang, port, "tcp"))
+        finally:
+            srv.close()
+
     def test_port_provisioned_needs_both_sides(self):
         self.assertFalse(pt.port_provisioned(self.pang, 29400, "tcp"))
         pt.add_gerbil_port(self.pang, 29400, "tcp")
