@@ -48,14 +48,17 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-VERSION = "1.4.5"
+VERSION = "1.4.6"
 
 DEFAULT_PANGOLIN_DIR = "/opt/pangolin"
 DEFAULT_CONFIG = "/etc/pangolin-tool/config.json"
 DEFAULT_STATE = "/etc/pangolin-tool/rules.json"
 
 # Порты, которые нельзя занимать правилом: сам Pangolin/Traefik/Gerbil.
-RESERVED_PORTS = {22, 80, 443, 3000, 3001, 3002, 3003, 51820, 21820}
+# 52847 — порт WireGuard Gerbil после смены с 51820 (2026-11-12, DPI);
+# 8443 — wstunnel-сервер (обфускация Newt<->Gerbil). Правило на этих
+# портах уронило бы Gerbil (конфликт listener'а / docker-proxy).
+RESERVED_PORTS = {22, 80, 443, 3000, 3001, 3002, 3003, 51820, 21820, 52847, 8443}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 

@@ -73,7 +73,7 @@ class FileEditTests(unittest.TestCase):
 
 class ValidationTests(unittest.TestCase):
     def test_reserved_ports(self):
-        for p in (22, 80, 443, 51820, 3003):
+        for p in (22, 80, 443, 51820, 3003, 52847, 8443):
             with self.assertRaises(pt.ToolError):
                 pt.validate_rule("x", "tcp", p, "127.0.0.1", 3389)
 
